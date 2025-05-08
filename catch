@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Catch the Falling Ball</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #111;
+      font-family: sans-serif;
+      color: white;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    canvas {
+      background: #222;
+      border: 2px solid #444;
+      display: block;
+    }
+    .overlay {
+      position: absolute;
+      text-align: center;
+    }
+    .menu, .game-over {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      align-items: center;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 18px;
+      border: none;
+      border-radius: 5px;
+      background: lime;
+      color: black;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #caff70;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="400" height="600"></canvas>
+
+  <div class="overlay" style="width: 400px; height: 600px;">
+    <div class="menu" id="mainMenu" style="display: flex;">
+      <h1>Catch the Ball</h1>
+      <p>Use arrow keys to move</p>
+      <button onclick="startGame()">Start</button>
+    </div>
+
+    <div class="game-over" id="gameOverScreen">
+      <h2>Game Over</h2>
+      <p id="finalScore"></p>
+      <p id="highScoreText"></p>
+      <button onclick="retryGame()">Retry</button>
+      <button onclick="showMenu()">Main Menu</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const menu = document.getElementById('mainMenu');
+    const gameOverScreen = document.getElementById('gameOverScreen');
+    const finalScoreText = document.getElementById('finalScore');
+    const highScoreText = document.getElementById('highScoreText');
+
+    let gameRunning = false;
+    let score = 0;
+    let highScore = localStorage.getItem("catchGameHighScore") || 0;
+    let slowMo = false;
+    let slowMoTimer = 0;
+    let scoreMultiplier = 1;
+    let spawnCount = 1;
+
+    const keys = {};
+    const balls = [];
+    const bullets = [];
+
+    const paddleBaseWidth = 80;
+    let purplePowerTimer = 0;
+
+    const paddle = {
+      x: 160,
+      y: canvas.height - 20,
+      width: paddleBaseWidth,
+      height: 10,
+      speed: 0,
+      maxSpeed: 6,
+      acceleration: 0.5,
+      friction: 0.2,
+      guns: false
+    };
+
+    function createBall() {
+      const roll = Math.random() * 100;
+      let type = 'normal';
+      if (roll < 1) type = 'rainbow';
+      else if (roll < 6) type = 'purple';
+      else if (roll < 12) type = 'bonus';
+      else if (roll < 20) type = 'slow';
+
+      const randomSpeed = Math.random() * 3 + 2; // Random speed between 2 and 5
+
+      return {
+        x: Math.random() * (canvas.width - 20) + 10,
+        y: 0,
+        radius: 10,
+        dy: randomSpeed,
+        type: type
+      };
+    }
+
+    function resetGame() {
+      score = 0;
+      balls.length = 0;
+      bullets.length = 0;
+      paddle.x = 160;
+      paddle.speed = 0;
+      paddle.width = paddleBaseWidth;
+      paddle.guns = false;
+      slowMo = false;
+      slowMoTimer = 0;
+      scoreMultiplier = 1;
+      spawnCount = 1;
+      canvas.width = 400;
+      for (let i = 0; i < spawnCount; i++) balls.push(createBall());
+    }
+
+    function drawPaddle() {
+      ctx.fillStyle = 'lime';
+      ctx.fillRect(paddle.x, paddle.y, paddle.width, paddle.height);
+
+      // Draw guns on top
+      if (paddle.guns) {
+        ctx.fillStyle = 'gray';
+        ctx.fillRect(paddle.x, paddle.y - 6, 5, 6);
+        ctx.fillRect(paddle.x + paddle.width - 5, paddle.y - 6, 5, 6);
+      }
+    }
+
+    function drawBall(ball) {
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+      if (ball.type === 'normal') ctx.fillStyle = 'red';
+      else if (ball.type === 'slow') ctx.fillStyle = 'blue';
+      else if (ball.type === 'bonus') ctx.fillStyle = 'yellow';
+      else if (ball.type === 'purple') ctx.fillStyle = 'purple';
+      else if (ball.type === 'rainbow') ctx.fillStyle = 'linear-gradient(to right, red, orange, yellow, green, blue, indigo, violet)';
+      ctx.fillStyle = (ball.type === 'rainbow') ? '#fff' : ctx.fillStyle;
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    function drawBullets() {
+      ctx.fillStyle = 'white';
+      bullets.forEach(b => {
+        ctx.fillRect(b.x, b.y, 2, 8);
+      });
+    }
+
+    function drawScore() {
+      ctx.fillStyle = 'white';
+      ctx.font = '18px Arial';
+      ctx.fillText('Score: ' + score, 10, 30);
+      ctx.fillText('High: ' + highScore, canvas.width - 120, 30);
+    }
+
+    function movePaddle() {
+      if (keys.ArrowLeft) paddle.speed -= paddle.acceleration;
+      else if (keys.ArrowRight) paddle.speed += paddle.acceleration;
+      else {
+        if (paddle.speed > 0) paddle.speed -= paddle.friction;
+        else if (paddle.speed < 0) paddle.speed += paddle.friction;
+      }
+
+      paddle.speed = Math.max(Math.min(paddle.speed, paddle.maxSpeed), -paddle.maxSpeed);
+      paddle.x += paddle.speed;
+      if (paddle.x < 0) paddle.x = 0;
+      if (paddle.x + paddle.width > canvas.width) paddle.x = canvas.width - paddle.width;
+    }
+
+    function moveBalls() {
+      for (let i = 0; i < balls.length; i++) {
+        const ball = balls[i];
+        ball.y += slowMo ? ball.dy * 0.5 : ball.dy;
+
+        if (
+          ball.y + ball.radius > paddle.y &&
+          ball.y < paddle.y + paddle.height &&
+          ball.x > paddle.x &&
+          ball.x < paddle.x + paddle.width
+        ) {
+          if (ball.type === 'normal') score += 1 * scoreMultiplier;
+          else if (ball.type === 'bonus') score += 5 * scoreMultiplier;
+          else if (ball.type === 'slow') {
+            slowMo = true;
+            slowMoTimer = 300;
+          } else if (ball.type === 'purple') {
+            paddle.width += 20;
+            paddle.guns = true;
+            purplePowerTimer += 900;
+          } else if (ball.type === 'rainbow') {
+            canvas.width += 40;
+            scoreMultiplier *= 2;
+            spawnCount++;
+          }
+          balls[i] = createBall();
+        } else if (ball.y > canvas.height && ball.type === 'normal') {
+          endGame();
+        } else if (ball.y > canvas.height) {
+          balls[i] = createBall();
+        }
+      }
+    }
+
+    function moveBullets() {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].y -= 8;
+        if (bullets[i].y < 0) bullets.splice(i, 1);
+      }
+
+      for (let i = balls.length - 1; i >= 0; i--) {
+        const ball = balls[i];
+        for (let j = bullets.length - 1; j >= 0; j--) {
+          const b = bullets[j];
+          const dx = b.x - ball.x;
+          const dy = b.y - ball.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < ball.radius) {
+            if (ball.type === 'normal') score += 2 * scoreMultiplier;
+            else if (ball.type === 'bonus') score += 10 * scoreMultiplier;
+            else if (ball.type === 'slow') {
+              slowMo = true;
+              slowMoTimer = 300;
+            } else if (ball.type === 'purple') {
+              paddle.width += 20;
+              paddle.guns = true;
+              purplePowerTimer += 900;
+            } else if (ball.type === 'rainbow') {
+              canvas.width += 40;
+              scoreMultiplier *= 2;
+              spawnCount++;
+            }
+            balls[i] = createBall();
+            bullets.splice(j, 1);
+            break;
+          }
+        }
+      }
+    }
+
+    let bulletCooldown = 0;
+
+    function update() {
+      if (!gameRunning) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      while (balls.length < spawnCount) balls.push(createBall());
+
+      movePaddle();
+      moveBalls();
+      moveBullets();
+
+      if (paddle.guns) {
+        bulletCooldown--;
+        if (bulletCooldown <= 0) {
+          bullets.push(
+            { x: paddle.x, y: paddle.y - 6 },
+            { x: paddle.x + paddle.width - 2, y: paddle.y - 6 }
+          );
+          bulletCooldown = 60;
+        }
+        purplePowerTimer--;
+        if (purplePowerTimer <= 0) {
+          paddle.width = paddleBaseWidth;
+          paddle.guns = false;
+        }
+      }
+
+      if (slowMo) {
+        slowMoTimer--;
+        if (slowMoTimer <= 0) slowMo = false;
+      }
+
+      drawPaddle();
+      balls.forEach(drawBall);
+      drawBullets();
+      drawScore();
+
+      requestAnimationFrame(update);
+    }
+
+    function startGame() {
+      menu.style.display = 'none';
+      gameOverScreen.style.display = 'none';
+      gameRunning = true;
+      resetGame();
+      update();
+    }
+
+    function endGame() {
+      gameRunning = false;
+      finalScoreText.textContent = `Your score: ${score}`;
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem("catchGameHighScore", score);
+      }
+      highScoreText.textContent = `High score: ${highScore}`;
+      gameOverScreen.style.display = 'flex';
+    }
+
+    function retryGame() {
+      startGame();
+    }
+
+    function showMenu() {
+      gameRunning = false;
+      balls.length = 0;
+      bullets.length = 0;
+      paddle.width = paddleBaseWidth;
+      paddle.guns = false;
+      slowMo = false;
+      scoreMultiplier = 1;
+      spawnCount = 1;
+      canvas.width = 400;
+      purplePowerTimer = 0;
+      menu.style.display = 'flex';
+      gameOverScreen.style.display = 'none';
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    document.addEventListener('keydown', e => keys[e.key] = true);
+    document.addEventListener('keyup', e => keys[e.key] = false);
+  </script>
+</body>
+</html>
